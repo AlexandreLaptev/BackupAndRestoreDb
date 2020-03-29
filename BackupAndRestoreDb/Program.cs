@@ -2,7 +2,6 @@
 using System.IO;
 using System.Configuration;
 using System.Data.SqlClient;
-using System.Threading.Tasks;
 using Microsoft.SqlServer.Management.Common;
 using Microsoft.SqlServer.Management.Smo;
 
@@ -10,7 +9,7 @@ namespace BackupAndRestoreDb
 {
     class Program
     {
-        static async Task Main(string[] args)
+        static void Main(string[] args)
         {
             try
             {
@@ -20,8 +19,8 @@ namespace BackupAndRestoreDb
                 var backupFileName = $"Northwind_{ DateTime.Now:yyyy-MM-dd-HH-mm-ss}.bak";
                 var backupFilePath = Path.Combine(backupDirectory, backupFileName);
 
-                await BackupDB(backupFilePath, connectionString);
-                await RestoreDB(backupFilePath, connectionString);
+                BackupDB(backupFilePath, connectionString);
+                RestoreDB(backupFilePath, connectionString);
 
                 // Remove the backup files from the hard disk
                 File.Delete(backupFilePath);
@@ -36,14 +35,14 @@ namespace BackupAndRestoreDb
             Console.ReadLine();
         }
 
-        private static async Task<bool> BackupDB(string backupFilePath, string connectionString)
+        private static void BackupDB(string backupFilePath, string connectionString)
         {
-            var tcs = new TaskCompletionSource<bool>();
+            Console.WriteLine("Backup operation started...");
+
+            ServerConnection connection = null;
 
             try
             {
-                Console.WriteLine("Backup operation started...");
-
                 // Define a Backup object variable
                 Backup backup = new Backup();
 
@@ -61,7 +60,7 @@ namespace BackupAndRestoreDb
                 backup.Devices.Add(deviceItem);
 
                 // Setup a new connection to the data server
-                ServerConnection connection = new ServerConnection(new SqlConnection(connectionString));
+                connection = new ServerConnection(new SqlConnection(connectionString));
                 Server sqlServer = new Server(connection);
 
                 // Initialize devices associated with a backup operation
@@ -78,56 +77,56 @@ namespace BackupAndRestoreDb
 
                 backup.PercentCompleteNotification = 10;
 
-                backup.Complete += (s, e) =>
-                {
-                    // Inform the user that the backup has been completed 
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine(e.Error.Message);
-                    Console.ResetColor();
-
-                    connection.Disconnect();
-
-                    tcs.SetResult(true);
-                };
-
                 backup.PercentComplete += (s, e) =>
                 {
                     // Inform the user percent complete
                     Console.WriteLine($"Percent Complete: {e.Percent}");
                 };
 
-                backup.Information += (s, e) =>
-                {
-                    if (e.Error.Message.Contains("Cannot open backup device") || e.Error.Message.Contains("terminating abnormally"))
-                    {
-                        Console.WriteLine($"Backup Error: {e.Error.Message}");
-                        tcs.TrySetException(new Exception(e.Error.Message));
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Backup Information: {e.Error.Message}");
-                    }
-                };
-
                 // Run SqlBackup to perform the full database backup on the instance of SQL Server
-                backup.SqlBackupAsync(sqlServer);
+                backup.SqlBackup(sqlServer);
+
+                // Inform the user that the backup has been completed 
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("Backup has been completed");
+                Console.ResetColor();
             }
+            // Catch the SMO exception   
+            catch (SmoException smoex)
+            {
+                // Display the SMO exception message 
+                Console.WriteLine(smoex.Message);
+
+                // Display the sequence of non-SMO exceptions that caused the SMO exception 
+                var ex = smoex.InnerException;
+                while (!ReferenceEquals(ex.InnerException, (null)))
+                {
+                    Console.WriteLine(ex.InnerException.Message);
+                    ex = ex.InnerException;
+                }
+            }
+            // Catch other non-SMO exceptions
             catch (Exception ex)
             {
-                tcs.TrySetException(ex);
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Backup failed: " + ex.StackTrace);
+                Console.ResetColor();
             }
-
-            return await tcs.Task;
+            finally
+            {
+                if (connection != null)
+                    connection.Disconnect();
+            }
         }
 
-        private static async Task<bool> RestoreDB(string backupFilePath, string connectionString)
+        private static void RestoreDB(string backupFilePath, string connectionString)
         {
-            var tcs = new TaskCompletionSource<bool>();
+            Console.WriteLine("Restore operation started...");
+
+            ServerConnection connection = null;
 
             try
             {
-                Console.WriteLine("Restore operation started...");
-
                 // Define a Restore object variable
                 Restore restore = new Restore();
 
@@ -148,20 +147,8 @@ namespace BackupAndRestoreDb
                 restore.PercentCompleteNotification = 10;
 
                 // Setup a new connection to the data server
-                ServerConnection connection = new ServerConnection(new SqlConnection(connectionString));
+                connection = new ServerConnection(new SqlConnection(connectionString));
                 Server sqlServer = new Server(connection);
-
-                restore.Complete += (s, e) =>
-                {
-                    // Inform the user that the restore has been completed
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine(e.Error.Message);
-                    Console.ResetColor();
-
-                    connection.Disconnect();
-
-                    tcs.SetResult(true);
-                };
 
                 restore.PercentComplete += (s, e) =>
                 {
@@ -169,20 +156,45 @@ namespace BackupAndRestoreDb
                     Console.WriteLine($"Percent Complete: {e.Percent}");
                 };
 
-                restore.Information += (s, e) =>
-                {
-                    Console.WriteLine($"Restore Information: {e.Error.Message}");
-                };
-
                 // Restore the full database backup with recovery         
-                restore.SqlRestoreAsync(sqlServer);
+                restore.SqlRestore(sqlServer);
+
+                var db = sqlServer.Databases[restore.Database];
+                db.SetOnline();
+                sqlServer.Refresh();
+                db.Refresh();
+
+                // Inform the user that the restore has been completed
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("Restore has been completed");
+                Console.ResetColor();
             }
+            // Catch the SMO exception   
+            catch (SmoException smoex)
+            {
+                // Display the SMO exception message 
+                Console.WriteLine(smoex.Message);
+
+                // Display the sequence of non-SMO exceptions that caused the SMO exception 
+                var ex = smoex.InnerException;
+                while (!ReferenceEquals(ex.InnerException, (null)))
+                {
+                    Console.WriteLine(ex.InnerException.Message);
+                    ex = ex.InnerException;
+                }
+            }
+            // Catch other non-SMO exceptions
             catch (Exception ex)
             {
-                tcs.TrySetException(ex);
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Restore failed: " + ex.StackTrace);
+                Console.ResetColor();
             }
-
-            return await tcs.Task;
+            finally
+            {
+                if (connection != null)
+                    connection.Disconnect();
+            }
         }
     }
 }
